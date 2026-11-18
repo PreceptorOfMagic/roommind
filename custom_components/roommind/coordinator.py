@@ -102,6 +102,7 @@ from .managers.valve_manager import ValveManager
 from .managers.weather_manager import WeatherManager
 from .managers.window_manager import WindowManager
 from .utils.area_utils import REST_SWITCHED_OFF, rooms_with_area
+from .utils.ducted_utils import OCCUPANT_GAIN_KW, delivered_fraction, expected_share, internal_gain_kw
 from .utils.device_utils import (
     build_rooms_devices_map,
     configured_valves,
@@ -1089,6 +1090,10 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 q_occupancy = 1.0
                 break
             # unavailable/unknown/off → skip (conservative: no occupancy heat)
+        # Continuous internal gains (PCs etc.): occupancy input becomes kW (ducted_utils)
+        gains_kw = internal_gain_kw(self.hass, room)
+        if gains_kw is not None:
+            q_occupancy = gains_kw + OCCUPANT_GAIN_KW * q_occupancy
 
         # Determine and apply mode with MPC controller
         controller = MPCController(
@@ -1120,6 +1125,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             head_offsets=self._head_offsets,
             price_level=self._price_level_for(room),
             planning_temp=planning_temp,
+            ducted_share=expected_share(self.hass, get_all_entity_ids(room.get("devices", []))),
         )
         mode, power_fraction = await controller.async_evaluate(current_temp, targets)
         if radiator:
@@ -2206,6 +2212,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         ``entity_ids`` limits the observation to these devices (default: all of the room).
         """
         dominated: str | None = None
+        shares: list[float] = []  # delivered_power_fraction of running devices (ducted zones)
 
         for eid in entity_ids if entity_ids is not None else get_all_entity_ids(room.get("devices", [])):
             state = self.hass.states.get(eid)
@@ -2228,10 +2235,14 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 if dominated == "cooling":
                     return (None, 0.0)  # conflicting → skip
                 dominated = "heating"
+                if (share := delivered_fraction(state)) is not None:
+                    shares.append(share)
             elif action == "cooling":
                 if dominated == "heating":
                     return (None, 0.0)  # conflicting → skip
                 dominated = "cooling"
+                if (share := delivered_fraction(state)) is not None:
+                    shares.append(share)
             elif action in ("idle", "off"):
                 if dominated is None:
                     dominated = "idle"
@@ -2243,6 +2254,10 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             return (None, 0.0)  # no devices or all unavailable
 
         pf = 1.0 if dominated in ("heating", "cooling") else 0.0
+        if pf > 0 and shares:
+            pf = min(1.0, sum(shares))
+            if pf <= 0.0:
+                return ("idle", 0.0)
         return (dominated, pf)
 
     def _delivered_training_power(
@@ -2281,7 +2296,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 held = held_opening(eid)
                 labels.append(held if held is not None else pf)
             elif action in running_actions:
-                labels.append(1.0)
+                share = delivered_fraction(state)
+                labels.append(share if share is not None else 1.0)
             elif action in ("idle", "off", "heating", "preheating", "cooling", "defrosting"):
                 labels.append(0.0)
             else:

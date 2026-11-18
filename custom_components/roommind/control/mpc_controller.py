@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -1405,6 +1406,7 @@ class MPCController:
         head_offsets: HeadOffsetTracker | None = None,
         price_level: str | None = None,
         planning_temp: float | None = None,
+        ducted_share: float | None = None,
     ) -> None:
         self.hass = hass
         self.room_config = room_config
@@ -1446,6 +1448,8 @@ class MPCController:
         # Room temperature the plan starts from while the sensor lags a radiator's afterglow
         # (AfterglowReading); None plans from the reading
         self._planning_temp = planning_temp
+        # Ducted zone: share of the shared unit this room typically gets while it runs (0..1, None = own device)
+        self._ducted_share = ducted_share
         # Heating system whose run rules apply this cycle (see _resolve_run_system)
         self._run_system = heating_system_type
         self._previous_heat_sources = previous_heat_sources
@@ -1708,6 +1712,12 @@ class MPCController:
             return MODE_IDLE, 0.0
 
         model = self._model_manager.get_model(self._area_id)
+        if self._ducted_share is not None and 0.0 < self._ducted_share < 1.0:
+            # beta_h/beta_c are learned at full share (delivered_power_fraction labels); plan with the
+            # share this room actually gets while the other zones do what they usually do
+            model = copy.copy(model)
+            model.Q_cool *= self._ducted_share
+            model.Q_heat *= self._ducted_share
         can_heat, can_cool = self._get_can_heat_cool()
 
         # Use heat target for horizon computation (heating is most common)
