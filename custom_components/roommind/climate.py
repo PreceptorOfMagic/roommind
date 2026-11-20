@@ -542,6 +542,13 @@ class RoomMindRoomClimate(CoordinatorEntity, ClimateEntity):
             "vacation": vacation_until is not None and time.time() < vacation_until,
             # cheap / normal / expensive, None without a price source
             "price_level": live.get("price_level"),
+            # Observe-only (ducted fork): the controller's decision even while control is off
+            "planned_mode": live.get("planned_mode"),
+            "planned_power": live.get("planned_power"),
+            "control_active": live.get("control_active"),
+            "cool_target": live.get("cool_target"),
+            "heat_target": live.get("heat_target"),
+            "price_shift_cool": live.get("price_shift_cool"),
         }
 
     async def _async_set_override(self, heat: float | None, cool: float | None, override_type: str) -> None:

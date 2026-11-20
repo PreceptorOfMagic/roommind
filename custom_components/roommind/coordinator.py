@@ -1431,6 +1431,10 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             self._rooms_switched_off.add(area_id)
         elif climate_active:
             self._rooms_switched_off.discard(area_id)
+        # What the controller decided before an off switch idles it: shown as planned_mode /
+        # planned_power, so a house can watch RoomMind's decisions before handing it control
+        # (observe-only, ducted fork).
+        planned_mode, planned_pf = mode, power_fraction
         if not climate_active:
             # Climate control disabled — do NOT send commands. A pinned valve is handed back
             # all the same, or the TRV could not regulate on its own.
@@ -1638,6 +1642,9 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             coil_dry=coil_dry,
         )
         room_state.update(air_quality)
+        room_state["planned_mode"] = planned_mode
+        room_state["planned_power"] = round(planned_pf * 100) if planned_mode != MODE_IDLE else 0
+        room_state["control_active"] = climate_active
         return room_state
 
     def _note_model_inputs(
