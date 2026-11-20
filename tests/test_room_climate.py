@@ -263,6 +263,13 @@ def test_extra_attributes(setup):
         "occupancy_vacant": False,
         "vacation": True,
         "price_level": None,
+        # ducted fork: observe-only view
+        "planned_mode": None,
+        "planned_power": None,
+        "control_active": None,
+        "cool_target": 24.0,
+        "heat_target": 21.0,
+        "price_shift_cool": None,
     }
     assert entity.current_humidity == 55.0
 

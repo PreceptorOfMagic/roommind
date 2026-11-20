@@ -21,6 +21,8 @@ from homeassistant.core import HomeAssistant
 DELIVERED_PF_ATTR = "delivered_power_fraction"
 # Long-run share while the unit runs, published by the device/adapter; used to plan (MPCController ducted_share)
 EXPECTED_SHARE_ATTR = "expected_share"
+# Share this zone would get with the zones that want air right now (v2 group split); preferred over expected_share
+PROJECTED_SHARE_ATTR = "projected_share"
 # Occupied rooms with gain sensors add this much (kW) for the people in them (~1 person)
 OCCUPANT_GAIN_KW = 0.1
 
@@ -74,3 +76,63 @@ def internal_gain_kw(hass: HomeAssistant, room: dict) -> float | None:
         unit = (state.attributes.get("unit_of_measurement") or "W").strip()
         total += value if unit.lower() == "kw" else value / 1000.0
     return total
+
+
+def planning_share(hass: HomeAssistant, entity_ids) -> float | None:
+    """Share to plan with: the projected share (zones wanting air now) if the adapter publishes it, else the typical one.
+
+    Rooms plan one at a time; with the projected share each room already counts the rooms that want air in the same
+    cycle, so several rooms pre-cooling together each plan with the smaller share they will really get.
+    """
+    best: float | None = None
+    for eid in entity_ids:
+        state = hass.states.get(eid)
+        if state is None:
+            continue
+        try:
+            v = float(state.attributes.get(PROJECTED_SHARE_ATTR))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and 0.0 < v <= 1.0:
+            best = v if best is None else max(best, v)
+    return best if best is not None else expected_share(hass, entity_ids)
+
+
+def is_ducted(state: Any) -> bool:
+    """True for a device that publishes its airflow share (a ducted zone)."""
+    return state is not None and DELIVERED_PF_ATTR in state.attributes
+
+
+def passively_flowing(state: Any) -> bool:
+    """A zone that is "off" for RoomMind but still gets air: a constant zone takes the unit's surplus."""
+    if state is None or state.attributes.get("hvac_action") not in ("heating", "cooling"):
+        return False
+    frac = delivered_fraction(state)
+    return frac is not None and frac > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Heat between rooms (v2): a room exchanges heat with the rest of the house as well as outdoors. With conductances
+# U_out and U_in, U_out*(T_out - T) + U_in*(T_in - T) = (U_out + U_in) * (T_amb - T) with
+# T_amb = T_out + w * (T_in - T_out), w = U_in / (U_out + U_in). So the RC model stays as it is and the room sees a
+# blended "outside": w is the room's coupling_weight (0 = outdoors only), fitted from the house's own history.
+# ---------------------------------------------------------------------------
+
+
+def coupled_ambient(t_out: float, t_inside: float, weight: float) -> float:
+    """The temperature a room effectively loses heat to, with the rest of the house at ``t_inside``."""
+    w = min(0.95, max(0.0, weight))
+    return t_out + w * (t_inside - t_out)
+
+
+def neighbour_temp(room_states: dict, area_id: str, room: dict) -> float | None:
+    """Mean current temperature of the room's neighbours (``coupling_rooms``, default every other room)."""
+    wanted = room.get("coupling_rooms") or [a for a in room_states if a != area_id]
+    temps = []
+    for a in wanted:
+        if a == area_id:
+            continue
+        t = (room_states.get(a) or {}).get("current_temp")
+        if isinstance(t, (int, float)) and math.isfinite(t):
+            temps.append(float(t))
+    return sum(temps) / len(temps) if temps else None

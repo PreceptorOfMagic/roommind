@@ -122,6 +122,8 @@ _ROOM_SAVE_FIELDS = (
     "humidity_sensor",
     "occupancy_sensors",
     "heat_gain_sensors",
+    "coupling_weight",
+    "coupling_rooms",
     "occupancy_eco_enabled",
     "occupancy_eco_delay",
     "preheat_enabled",
@@ -448,6 +450,8 @@ async def websocket_list_rooms(
         vol.Optional("humidity_sensor"): str,
         vol.Optional("occupancy_sensors"): [str],
         vol.Optional("heat_gain_sensors"): [str],
+        vol.Optional("coupling_weight"): vol.All(vol.Coerce(float), vol.Range(min=0, max=0.95)),
+        vol.Optional("coupling_rooms"): [str],
         vol.Optional("occupancy_eco_enabled"): bool,
         vol.Optional("occupancy_eco_delay"): vol.All(
             vol.Coerce(int), vol.Range(min=MIN_OCCUPANCY_ECO_DELAY_MINUTES, max=240)

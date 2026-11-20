@@ -252,6 +252,8 @@ class RoomMindStore:
             "humidity_sensor": config.get("humidity_sensor", ""),
             "occupancy_sensors": config.get("occupancy_sensors", []),
             "heat_gain_sensors": config.get("heat_gain_sensors", []),
+            "coupling_weight": config.get("coupling_weight", 0.0),
+            "coupling_rooms": config.get("coupling_rooms", []),
             "occupancy_eco_enabled": config.get("occupancy_eco_enabled", False),
             "occupancy_eco_delay": config.get("occupancy_eco_delay", DEFAULT_OCCUPANCY_ECO_DELAY_MINUTES),
             "preheat_enabled": config.get("preheat_enabled", True),

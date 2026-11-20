@@ -92,6 +92,10 @@ NORMAL_ROOM_KEYS = {
     "air_quality_bad",
     "air_quality_reason",
     "ventilation_active",
+    # ducted fork: the controller's decision even while climate control is off (observe-only)
+    "planned_mode",
+    "planned_power",
+    "control_active",
 }
 
 OUTDOOR_ROOM_KEYS = {

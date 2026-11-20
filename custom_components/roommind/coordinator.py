@@ -102,7 +102,16 @@ from .managers.valve_manager import ValveManager
 from .managers.weather_manager import WeatherManager
 from .managers.window_manager import WindowManager
 from .utils.area_utils import REST_SWITCHED_OFF, rooms_with_area
-from .utils.ducted_utils import OCCUPANT_GAIN_KW, delivered_fraction, expected_share, internal_gain_kw
+from .utils.ducted_utils import (
+    OCCUPANT_GAIN_KW,
+    coupled_ambient,
+    delivered_fraction,
+    internal_gain_kw,
+    is_ducted,
+    neighbour_temp,
+    passively_flowing,
+    planning_share,
+)
 from .utils.device_utils import (
     build_rooms_devices_map,
     configured_valves,
@@ -434,11 +443,31 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             # Live, not this cycle's snapshot: an area or room deleted while the cycle awaited another room
             if not rooms_with_area(self.hass, {area_id: room}) or store.get_room(area_id) is None:
                 continue
+            # Heat between rooms (ducted fork v2): the room sees outdoors blended with the rest of the house
+            saved_outdoor = self.outdoor_temp_effective
+            room_forecast = outdoor_forecast
+            ambient: float | None = None
+            weight = float(room.get("coupling_weight") or 0.0)
+            if weight > 0 and saved_outdoor is not None:
+                t_in = neighbour_temp((self.data or {}).get("rooms") or {}, area_id, room)
+                if t_in is not None:
+                    ambient = coupled_ambient(saved_outdoor, t_in, weight)
+                    self.outdoor_temp_effective = ambient
+                    room_forecast = [
+                        {**f, "temperature": coupled_ambient(float(f["temperature"]), t_in, weight)}
+                        if f.get("temperature") is not None
+                        else f
+                        for f in outdoor_forecast
+                    ]
             try:
-                room_state = await self._async_process_room(room, settings, outdoor_forecast)
+                room_state = await self._async_process_room(room, settings, room_forecast)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Room '%s': processing failed, skipping", area_id)
                 continue
+            finally:
+                self.outdoor_temp_effective = saved_outdoor
+            room_state["ambient_temp"] = round(ambient, 2) if ambient is not None else None
+            room_state["coupling_weight"] = weight
             if not self._room_still_runs(area_id):
                 continue
             room_states[area_id] = room_state
@@ -1125,7 +1154,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             head_offsets=self._head_offsets,
             price_level=self._price_level_for(room),
             planning_temp=planning_temp,
-            ducted_share=expected_share(self.hass, get_all_entity_ids(room.get("devices", []))),
+            ducted_share=planning_share(self.hass, get_all_entity_ids(room.get("devices", []))),
         )
         mode, power_fraction = await controller.async_evaluate(current_temp, targets)
         if radiator:
@@ -1798,6 +1827,15 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             ekf_mode = MODE_IDLE
             q_residual_training = 0.0
 
+        # Ducted (fork): a zone RoomMind keeps idle can still get air: the constant zones take whatever the open
+        # zones can't. Train what the room really received (mode + share) instead of the commanded idle.
+        if climate_active and has_external_sensor and ekf_mode == MODE_IDLE:
+            ducted_states = [self.hass.states.get(e) for e in get_all_entity_ids(room.get("devices", []))]
+            if any(is_ducted(st) for st in ducted_states):
+                obs_mode, obs_pf = self._observe_device_action(room)
+                if obs_mode in (MODE_HEATING, MODE_COOLING) and obs_pf > 0:
+                    ekf_mode, ekf_pf = obs_mode, obs_pf
+
         # Compressor min-run hold (#436): the room is IDLE but a held unit keeps running.
         # Training that as idle drifts alpha and empties the rebound charge mid-run, so
         # the step is skipped and the charge follows the unit actually running.
@@ -2226,8 +2264,9 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             if state is None or state.state in ("unavailable", "unknown"):
                 continue
 
-            # Device explicitly off → conclusively idle
-            if state.state == "off":
+            # Device explicitly off → conclusively idle, unless it is a ducted zone that still gets air
+            # (a constant zone takes the unit's surplus even while RoomMind keeps it "off")
+            if state.state == "off" and not passively_flowing(state):
                 if dominated is None:
                     dominated = "idle"
                 continue
